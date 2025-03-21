@@ -1,0 +1,343 @@
+---
+title: "Characterizing Automobiles"
+author: "Kendall Leonard"
+date: "03/17/2025--3.21.2025"
+
+format: 
+  html:  # You will quite likely want to change all but the last one, to taste
+    theme: lux  
+    mainfont: Century Schoolbook
+    highlight-style: github
+    title-block-banner: true
+    embed-resources: true
+---
+
+# Setup
+
+-   Setup
+
+```{r libs}
+sh <- suppressPackageStartupMessages
+sh(library(tidyverse))
+sh(library(caret))
+sh(library(fastDummies))
+sh(library(class))
+sh(library(ISLR)) # for the "Auto" dataframe
+sh(library(pROC))
+```
+
+# Dataframe
+
+-   We use the `Auto` dataframe.
+
+```{r df}
+head(Auto)
+```
+
+-   It has the following variable names, which describe various attributes of automobiles.
+
+```{r df2}
+names(Auto)
+```
+
+# Multiple Regression
+
+-   Run a linear regression model with `mpg` as the dependent variable and `horsepower` and `year` as features (variables).
+-   Compute and comment on the RMSE.
+
+```{r regression}
+
+m1 <- lm(mpg ~ horsepower, Auto)
+m2 <- lm(mpg ~ year, Auto)
+m3 <- lm(mpg ~ horsepower + year, Auto)
+m4 <- lm(mpg ~ horsepower * year, Auto)
+m5 <- lm(mpg ~ ., Auto)
+
+get_rmse <- function(m) {
+    pred <- predict(m, newdata = Auto)
+    sqrt(mean((Auto$mpg - pred)^2))
+}
+
+RMSE<-unlist(lapply(list(m1, m2, m3, m4, m5), get_rmse))
+RMSE
+mean(RMSE)
+```
+
+> [TODO]{style="color:red;font-weight:bold"}: *RMSE measures the difference between the predicted and actual models, and while we are dealing with miles per gallon, this means how far are we off in predicting the fuel efficacy of a car based on these variables. While none of the models did exceedingly terrible, in my opinion, with an average error of 4 miles per gallon, the model with the best prediction is (of course) the one with all the variables in the dataset. But the model with just horse power is about 2 mph more accurate than the model with just year, which might mean that horsepower has a higher influence in MPG than the year the car came out.*
+
+# Feature Engineering
+
+-   Create 10 features based on the `name` column.
+-   Remove all rows with a missing value.
+-   Ensure only `mpg` and the engineered features remain.
+-   Compute and comment on the RMSE.
+
+```{r features}
+Auto_features <- Auto %>%
+  mutate(
+    brand = word(tolower(name), 1),
+    model = str_remove(name, paste0("^", brand, " ")),
+    sport = if_else(str_detect(name, "sport"), 1, 0),
+    sedan= if_else(str_detect(name, "sedan"), 1, 0),
+    wagon= if_else(str_detect(name, "wagon|\\(sw\\)"), 1, 0),
+    hatch= if_else(str_detect(name, "hatch"), 1, 0))
+
+
+corrections <- c(
+  "chevy" = "chevrolet", "toyouta" = "toyota", "maxda" = "mazda", "chevroelt" = "chevrolet", 
+  "vokswagen" = "volkswagen", "vw" = "volkswagen", "mercedes" = "mercedes-benz", "hi" = "hi"
+)
+Auto_featues<-Auto_features %>%
+  mutate(
+    brand = recode(brand, !!!corrections)  
+  )
+#gathered from quick internet search, idk cars
+luxury_brands <- c("bmw", "mercedes-benz", "audi", "lexus", "cadillac", "jaguar", 
+                   "porsche", "land rover", "aston martin", "rolls-royce", 
+                   "bentley", "maserati", "ferrari", "lamborghini", "bugatti", "tesla", "genesis")
+
+
+Auto_features<-Auto_featues%>%    
+    mutate(
+    origin = case_when( #made my own because I thought that the og one wasn't specific enough with only 3 areas
+      brand %in% c("chevrolet", "buick", "plymouth", "amc", "ford", "pontiac", 
+                   "dodge", "mercury", "chrysler", "oldsmobile", "cadillac") ~ "U.S.",
+      brand %in% c("toyota", "datsun", "mazda", "honda", "subaru", "mitsubishi", "suzuki") ~ "Japanese",
+      brand %in% c("volkswagen", "peugeot", "audi", "saab", "bmw", "opel", "fiat", 
+                   "volvo", "renault", "mercedes-benz", "triumph") ~ "European",
+      brand %in% c("mini", "jaguar", "land rover", "aston martin", "rolls-royce", "bentley") ~ "British",
+      TRUE ~ "Other/Unspecified"  
+    )
+  )%>%
+  mutate(
+    luxury = if_else(brand %in% luxury_brands, 1, 0),
+        performance = if_else(str_detect(name, "turbo|gt|sport"), 1, 0),
+    
+    num_words_in_name = str_count(name, "\\S+")
+  )
+
+
+Auto_clean <- Auto_features %>%
+  drop_na() %>%
+  select(mpg, brand, model, sport, sedan, wagon, hatch, origin, luxury, performance, num_words_in_name)
+
+eng_model<-lm(mpg ~ ., data = Auto_clean)
+
+get_rmse <- function(model, data) {
+  pred <- predict(model, newdata = data)
+  sqrt(mean((data$mpg - pred)^2))
+}
+get_rmse(eng_model, Auto_clean)
+
+
+```
+
+> [TODO]{style="color:red;font-weight:bold"}: *With an RMSE of 1.45, this is actually close to the best model of Auto, which used all variables, and had an RMSE of 1.05, so I don't think my engineered features are any better than simply using the original features. Perhaps one or two of them have potential to decrease the RMSE of the orignal model, but I don't have enough time to go into that.*
+
+# Classification
+
+-   Use either of $K$-NN or Naive Bayes to predict whether an automobile is a `chevrolet` or a `honda`.
+-   Explain your choice of technique.
+-   Report on your Kappa value.
+
+```{r classification}
+ Auto_clean_filtered <- Auto_clean %>%
+  filter(brand %in% c("chevrolet", "honda"))
+
+Auto_clean_filtered$brand <- factor(Auto_clean_filtered$brand)
+
+set.seed(45)
+auto_index <- createDataPartition(Auto_clean_filtered$brand, p = 0.80, list = FALSE)
+training <- Auto_clean_filtered[ auto_index, ]
+testing <- Auto_clean_filtered[-auto_index, ]
+
+knn_model <- train(
+  brand ~ model + sport + sedan + wagon + hatch + origin + luxury + performance + num_words_in_name,  
+  data = training, 
+  method = "knn", 
+  trControl = trainControl(method = "cv", number = 5, summaryFunction = multiClassSummary), 
+  metric = "Kappa"  
+)
+
+print(knn_model)
+
+table(Auto_clean_filtered$brand)
+```
+
+> [TODO]{style="color:red;font-weight:bold"}: *So I went with KNN because it should've hopefully been less sensitive to the data distribution , and focused on other data points near it, plus I feel a bit more comfortable with it. My best kappa value was 0.80 when looking at 5 neighbors, which means that the model was able to correctly classify the point in question about 80% of the time.*
+
+# Binary Classification
+
+-   Predict whether a car is a `honda`.
+-   Use model weights.
+-   Display and comment on an ROC curve.
+
+```{r binary classification}
+Auto_clean_filtered <- Auto_clean %>%
+  mutate(honda_q = ifelse(brand == "honda", "honda", "other")) #i called it honda_q because its asking the point "are you a honda?" and the idea of simply going "honda?" make me laugh
+
+Auto_clean_filtered$honda_q <- factor(Auto_clean_filtered$honda_q)
+Auto_clean_filtered<-Auto_clean_filtered%>%
+  mutate(honda_q = factor(honda_q),
+         model = factor(model),
+         sport = factor(sport),
+         sedan = factor(sedan),
+         wagon = factor(wagon),
+         hatch = factor(hatch),
+         origin = factor(origin),
+         luxury = factor(luxury),
+         performance = factor(performance))
+
+Auto_clean_filtered <- Auto_clean_filtered %>%
+  select(-brand) 
+
+set.seed(8209713) #505
+auto_index <- createDataPartition(Auto_clean_filtered$honda_q, p = 0.80, list = FALSE)
+training <- Auto_clean_filtered[ auto_index, ]
+testing <- Auto_clean_filtered[-auto_index, ]
+
+
+class_weights <- ifelse(training$honda_q == "honda", 5, 1) 
+
+factor_cols <- c("model", "sport", "sedan", "wagon", "hatch", "origin", "luxury", "performance")  
+
+for (col in factor_cols) {
+  
+  levels(training[[col]]) <- union(levels(training[[col]]), levels(testing[[col]]))  
+  testing[[col]] <- factor(testing[[col]], levels = levels(training[[col]]))  
+}
+
+training[factor_cols] <- lapply(training[factor_cols], as.factor)
+testing[factor_cols] <- lapply(testing[factor_cols], as.factor)
+
+control = trainControl(method = "cv", number = 15)
+
+get_fit <- function(df) {
+  train(honda_q ~ sport + sedan + wagon + hatch + origin + luxury + performance + num_words_in_name, #with model, AUC is 1, so presuming model is causing a data leak somewhere
+        data = df, 
+        trControl = control,
+        method = "glm",
+        family = "binomial",
+         weights = class_weights,  
+        maxit = 5) 
+}
+
+fit <- get_fit(training)
+
+fit
+
+prob <- predict(fit, newdata = testing, type = "prob")[,2]
+myRoc <- roc(testing$honda_q, prob)
+plot(myRoc)
+auc(myRoc)
+```
+
+> [TODO]{style="color:red;font-weight:bold"}: *I ended up removing my 'model' column for this classification because it was leading to an AUC of 1, meaning it was predicitng perfectly, which is INCREDIBLY suspicious and indicative of a data leak, and although I couldn't find one outright, there is a chance that because there are so few hondas and only a few different models, it became a proxy. Once I took it out, we end up with an AUC of 0.89 which is quite good!*
+
+```{r}
+events_1970_1977 <- Auto %>%
+  filter(year == 70 | year == 77 | (year >= 65 & year <= 80))
+
+
+years<-Auto%>%
+  mutate(year = factor(year))
+
+
+
+mean_mpg_by_year <- Auto %>%
+  group_by(year) %>%
+  summarize(mean_mpg = mean(mpg, na.rm = TRUE))  
+
+
+ggplot(mean_mpg_by_year, aes(x = year, y = mean_mpg)) +
+  geom_point() +
+  geom_line(aes(group = 1), color = "black", linetype = "solid") +  
+  geom_smooth(method = "loess", color = "blue", size = 1) +  
+  geom_vline(xintercept = 70, linetype = "dashed", color = "red", size = 1) +  
+  geom_vline(xintercept = 77, linetype = "dashed", color = "green", size = 1) +
+  annotate("text", x = 70, y = max(mean_mpg_by_year$mean_mpg) - 1, label = "Clean Air Act 1970", angle = 0, hjust = 0, color = "red") +  
+  annotate("text", x =  77, y = max(mean_mpg_by_year$mean_mpg) - 1, label = "Amendments 1977", angle = 0, hjust = 0, color = "green") +
+  labs(title = "Change in Mean Fuel Efficiency (MPG) (1970-1977)", 
+       x = "Year", 
+       y = "Mean Fuel Efficiency (MPG)") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+```
+
+# Ethics
+
+-   Based on your analysis, comment on the [Clean Air Act of 1970 and Ammendments of 1977](https://www.epa.gov/clean-air-act-overview/evolution-clean-air-act)
+
+-   Discuss the civic responsibilities of data scientists for:
+
+    -   Big Data and Human-Centered Computing
+    -   Democratic Institutions
+    -   Climate Change
+
+-   Provide at least one statistical measure for each, such as a RMSE, Kappa value, or ROC curve.
+
+> [TODO]{style="color:red;font-weight:bold"}: My thoughts on the Clean Air Act of 1970 and Amendments of 1977
+
+*By examining the data with the added context of the Clean Air Act of 1970 and the Amendments of 1977, when looking at the fuel efficacy (miles per gallon) we can see a continuous upward trend after the initial Act in 1970, with a higher growth rate after the amendments. This indicates that this Act and following Amendments were effective in pushing manufacturers to build more fuel efficient cars, leading to less CO2 being produced by cars*
+
+> [TODO]{style="color:red;font-weight:bold"}: Big Data and Human-Centered Computing *Although I don't have all of the context for this data, it is a great starting point and example of how big data can be used for good and the importance of human centered computing. This kind of data allows for trends to be identified not just over time, but across models, brands and even countries of origin, which can be extremely helpful and can be transformed into models.  But to be concious, we need to be aware of the social implications that these trends represent and that the models can ensure that their recommendations or predictions do not disproportionately harm certain populations or lead to or perputate environmental damage or economic inequities. For instance, when predicting fuel efficiency (mpg), our models should ensure that their recommendations do not disproportionately benefit certain populations or car manufacturers at the expense of others. For example, the model predicts that higher horsepower vehicles are more efficient, it could lead to greater demand for luxury cars, potentially neglecting the needs of more affordable or environmentally friendly alternatives. *
+
+```{r big data}
+
+#didn't get a chance to actually make this mean anything important, im worried im short on time and
+mean_actual_mpg <- mean(Auto$mpg)
+m1<-lm(mpg ~ horsepower, Auto)
+predictions <- predict(m1, newdata = Auto_1)
+mean_predicted_mpg <- mean(predictions)
+print(paste("Mean Actual mpg:", round(mean_actual_mpg, 2)))
+print(paste("Mean Predicted mpg:", round(mean_predicted_mpg, 2)))
+mean_difference <- abs(mean_actual_mpg - mean_predicted_mpg)
+print(paste("Mean Difference:", round(mean_difference, 2)))
+
+```
+
+> [TODO]{style="color:red;font-weight:bold"}: Democratic Institutions *This kinda of data may not seem immediately relavent to democratic institutions, but the analysis that comes from this data is invaluable as it can lend insights that can shape the policies and acts. This can be seen in the time after the Clean Air Act and its Amendment in 1977. By looking at the graphic, which takes a mean of mpg of every car produced in each year, we can see the effect of this Act, and by continuing to use this kind of data, we can hopefullt continue to have a positive effect.  *
+
+```{r democracy}
+mean_mpg_by_year <- Auto %>%
+  group_by(year) %>%
+  summarize(mean_mpg = mean(mpg, na.rm = TRUE))
+
+ggplot(mean_mpg_by_year, aes(x = year, y = mean_mpg)) +
+  geom_point() +
+  geom_line(aes(group = 1), color = "black", linetype = "solid") +  
+  geom_smooth(method = "loess", color = "blue", size = 1) +  
+  geom_vline(xintercept = 70, linetype = "dashed", color = "red", size = 1) +  
+  geom_vline(xintercept = 77, linetype = "dashed", color = "green", size = 1) +
+  annotate("text", x = 70, y = max(mean_mpg_by_year$mean_mpg) - 1, label = "Clean Air Act 1970", angle = 0, hjust = 0, color = "red") +  
+  annotate("text", x =  77, y = max(mean_mpg_by_year$mean_mpg) - 1, label = "Amendments 1977", angle = 0, hjust = 0, color = "green") +
+  labs(title = "Change in Mean Fuel Efficiency (MPG) (1970-1977)", 
+       x = "Year", 
+       y = "Mean Fuel Efficiency (MPG)") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+```
+
+> [TODO]{style="color:red;font-weight:bold"}: Climate Change
+*I feel like I'm beating a dead horse a little, but its the only example coming to mind on a time limit. This kinda of data is a perfect example, paired with the knowledge of the Clean Air Act, of how data can be used to monitor, predict and influence perceptions around climate change. This graphic shows how these Acts do help influence these big companies, and with other data, such as specific CO2 outputs, we could see how hopefully CO2 output (theoretically) dropped.*
+
+```{r climate}
+mean_mpg_by_year <- Auto %>%
+  group_by(year) %>%
+  summarize(mean_mpg = mean(mpg, na.rm = TRUE))
+
+ggplot(mean_mpg_by_year, aes(x = year, y = mean_mpg)) +
+  geom_point() +
+  geom_line(aes(group = 1), color = "black", linetype = "solid") +  
+  geom_smooth(method = "loess", color = "blue", size = 1) +  
+  geom_vline(xintercept = 70, linetype = "dashed", color = "red", size = 1) +  
+  geom_vline(xintercept = 77, linetype = "dashed", color = "green", size = 1) +
+  annotate("text", x = 70, y = max(mean_mpg_by_year$mean_mpg) - 1, label = "Clean Air Act 1970", angle = 0, hjust = 0, color = "red") +  
+  annotate("text", x =  77, y = max(mean_mpg_by_year$mean_mpg) - 1, label = "Amendments 1977", angle = 0, hjust = 0, color = "green") +
+  labs(title = "Change in Mean Fuel Efficiency (MPG) (1970-1977)", 
+       x = "Year", 
+       y = "Mean Fuel Efficiency (MPG)") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+```
